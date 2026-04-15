@@ -1,281 +1,217 @@
 ---
-name: xhs-sentiment
-description: 小红书股票舆情监测 Skill。当用户想监测小红书上的股票/投资舆情、了解散户情绪风向、获取反向风险信号、进行每日舆情日报分析时，必须使用此 Skill。触发场景包括：提到"小红书舆情"、"散户情绪"、"反向指标"、"股票舆情监测"、"小红书股票"、"今日舆情"、"跑一次舆情"、"舆情日报"、"帮我加入watchlist"、"监测这只股"、"跟踪这个板块"。此 Skill 会自动用 Claude in Chrome 抓取小红书数据，计算风险评分，并输出专业金融分析师视角的舆情日报，涵盖当日热门个股/板块自动发现 + 用户自定义 Watchlist 深度追踪。
-compatibility: "需要 Claude in Chrome 扩展（已连接 + 用户已登录小红书）"
+name: xhs-xueqiu-sentiment
+description: 小红书+雪球双源股票舆情监测 Skill。当用户想监测小红书/雪球股票舆情、了解散户情绪风向、获取反向风险信号、进行每日舆情日报、复盘前日判断、追踪板块个股趋势时，必须使用此 Skill。触发场景：提到"小红书舆情"、"雪球舆情"、"雪球热帖"、"雪球讨论"、"散户情绪"、"反向指标"、"今日舆情"、"跑一次舆情"、"舆情日报"、"帮我加入watchlist"、"监测这只股"、"跟踪这个板块"、"复盘昨天"、"下午四点跑"、"刷新日报"。输出每日 HTML 日报，含小红书反向情绪 + 雪球中性参考双源评分、热点发现、Watchlist 追踪、前日复盘、多日趋势推断。
+compatibility: "需要 Claude in Chrome（已连接，已登录小红书和雪球）"
 ---
 
-# 小红书股票舆情监测 Skill v2
+# 股票舆情监测 Skill v3
 
 ## 核心定位
 
-小红书是**散户情绪的反向风向标**：讨论量越高、情绪越亢奋，市场风险越大。本 Skill 以专业金融分析师视角，每日从小红书抓取舆情，输出三层分析：
-1. **大盘情绪层** — 综合风险指数 + 散户情绪温度
-2. **热点发现层** — 当日小红书自动冒头的强势个股/板块
-3. **Watchlist 层** — 用户指定标的的深度舆情追踪
+**双源情绪模型：**
+- 🔴 **小红书** = 散户反向风向标（热度越高风险越大，以最新排序抓今日新帖）
+- 🟡 **雪球** = 专业投资者中性参考（热股榜 + 讨论量反映市场关注度）
+
+**四大能力：**
+1. 双源数据采集（token 高效，合并抓取）
+2. Watchlist 个股/板块深度追踪
+3. 前日复盘（结合收盘价验证判断准确性）
+4. 多日趋势智能推断（连续信号识别）
+
+**输出：HTML 日报文件**，每日刷新，可在浏览器直接查看。
 
 ---
 
-## Watchlist 管理（优先处理）
+## Watchlist 管理
 
-**当用户说"加入watchlist"、"监测XX"、"跟踪XX板块/股票"时：**
-
-立即询问并记录：
+用户说"监测XX / 加入watchlist / 跟踪XX"时，记录：
 ```
-标的名称：[股票名/板块名]
-类型：[个股 / 板块]
-小红书搜索关键词：[建议3个，用户确认]
-加入原因备注：[用户填写，如"恒生科技2025年被推很多，散户套牢严重"]
+名称 | 类型(个股/板块) | XHS关键词×3 | 雪球搜索词 | 备注
 ```
 
-将 Watchlist 存储在对话记忆中，格式：
-```json
-{
-  "watchlist": [
-    {
-      "name": "恒生科技",
-      "type": "板块",
-      "keywords": ["恒生科技", "港股科技", "恒科ETF"],
-      "note": "2025年被推极多，大量散户套牢，需持续监测解套/割肉情绪",
-      "added": "2026-04-14"
-    }
-  ]
-}
-```
+**当前 Watchlist（从 references/watchlist.md 读取）**
 
-**每次日报自动包含全部 Watchlist 标的的专项分析。**
+每次日报自动追加历史数据到 watchlist.md 的趋势表。
 
 ---
 
-## 执行前置检查
+## 执行流程（精简为4步）
+
+### Step 0：前置检查 + 读取昨日数据
 
 ```javascript
+// 检查连接
 tabs_context_mcp()
 ```
-若未连接，提示：**"请确保 Claude in Chrome 扩展已连接，并已在浏览器中登录小红书"**
+
+同时读取 `references/memory.md`，获取：
+- 昨日综合判断
+- 昨日各 Watchlist 标的的判断方向（看涨/看跌/中性）
+- 昨日收盘价（若用户已填入）
 
 ---
 
-## Step 1：大盘情绪关键词抓取
+### Step 1：雪球数据采集（快速，2个操作）
 
-读取 `references/keywords.md`，按每日必搜10个词依次执行。
+**1A：热股榜（DOM 抓取，10秒完成）**
 
-**每个关键词的完整抓取流程（3步，缺一不可）：**
-
-### Step 1-A：导航到搜索页
-
-```
-https://www.xiaohongshu.com/search_result?keyword=<关键词>&source=web_explore_feed
-```
-
-### Step 1-B：切换到「最新」排序
-
-导航完成后，执行以下 JS 打开筛选面板并自动点击"最新"：
-
+导航到 `https://xueqiu.com/hq#hot`，执行：
 ```javascript
-// 用 MutationObserver 等待筛选面板渲染完成后点击"最新"
+const names = [...document.querySelectorAll('.style_hot-stock-name_2PL')]
+  .map(el => el.innerText?.trim());
+const pcts = [...document.querySelectorAll('[class*="hot-stock-percent"]')]
+  .map(el => el.innerText?.trim());
+JSON.stringify(names.slice(0,9).map((n,i) => ({ rank:i+1, name:n, change:pcts[i] })))
+```
+
+**1B：Watchlist 标的讨论量（每个标的一次导航）**
+
+对每个 Watchlist 标的，导航到：
+`https://xueqiu.com/statuses/search.json?q=<标的名>&count=10&page=1`
+
+用 `document.body.innerText` 读取 JSON，提取：
+- `total_count`（总讨论量）
+- 前5条 statuses 的 `text`（去HTML标签）、`like_count`、`reply_count`
+
+> **Token节省点**：雪球接口直接返回JSON，无需解析DOM，每个标的一次导航即可。
+
+---
+
+### Step 2：小红书数据采集（最新排序，批量执行）
+
+**每个关键词固定三步（1A导航 + 1B切换最新 + 1C抓取）：**
+
+**1B 切换最新排序（MutationObserver，每次必执行）：**
+```javascript
 new Promise((resolve) => {
-  const observer = new MutationObserver(() => {
-    const tags = document.querySelectorAll('div.tags');
-    tags.forEach(el => {
-      if (el.innerText?.trim() === '最新' && !el.classList.contains('active')) {
-        el.click();
-        observer.disconnect();
-        resolve("✅ 已切换到最新排序");
+  const already = window.__INITIAL_STATE__?.search?.searchContext
+    ?.filters?.find(f=>f.type==='sort_type')?.tags?.[0] === 'time_descending';
+  if (already) { resolve('ok'); return; }
+  const obs = new MutationObserver(() => {
+    document.querySelectorAll('div.tags').forEach(el => {
+      if (el.innerText?.trim()==='最新' && !el.classList.contains('active')) {
+        el.click(); obs.disconnect(); resolve('switched');
       }
     });
   });
-  observer.observe(document.body, { childList: true, subtree: true });
-  // 点击筛选按钮打开面板
+  obs.observe(document.body, { childList:true, subtree:true });
   document.querySelector('div.filter')?.click();
-  // 3秒超时保护
-  setTimeout(() => {
-    observer.disconnect();
-    resolve("⚠️ 超时，当前排序: " + (window.__INITIAL_STATE__?.search?.searchContext?.filters?.find(f=>f.type==='sort_type')?.tags?.[0] || 'unknown'));
-  }, 3000);
+  setTimeout(() => { obs.disconnect(); resolve('timeout'); }, 3000);
 })
 ```
 
-> 💡 **说明**：小红书筛选面板是异步渲染的，必须用 MutationObserver 等待"最新"按钮出现后再点击。点击后面板自动关闭并刷新结果，无需再点确认。可通过检查 `window.__INITIAL_STATE__.search.searchContext.filters` 中 `sort_type` 是否为 `time_descending` 来验证生效。
-
-### Step 1-C：等待结果刷新后抓取数据
-
-排序切换后等待约 1 秒让页面刷新，再执行抓取：
-
+**1C 抓取数据：**
 ```javascript
+// 等待1秒后执行
 const results = [];
-document.querySelectorAll('section.note-item').forEach((el, i) => {
-  if (i >= 20) return;
+document.querySelectorAll('section.note-item').forEach((el,i) => {
+  if (i >= 15) return;
   const title = el.querySelector('a.title span')?.innerText?.trim();
   const author = el.querySelector('.name span')?.innerText?.trim();
   const likes = el.querySelector('.count')?.innerText?.trim();
-  // 提取发布时间（最新排序下可见）
-  const timeEl = el.querySelector('.author-wrapper span:last-child, [class*="time"]');
-  const time = timeEl?.innerText?.trim();
   const link = el.querySelector('a[href*="/explore/"]')?.href;
   const noteId = link?.match(/\/explore\/([a-f0-9]+)/)?.[1];
-  if (title || noteId) results.push({ title, author, likes, time, noteId });
+  if (title) results.push({ title, author, likes, noteId });
 });
 JSON.stringify(results)
 ```
 
-> 📌 **最新排序的价值**：能抓到今日刚发的帖子（如"15分钟前"），是当日实时情绪的最真实反映，而非历史高赞帖的堆积。
+**每日必搜关键词（10个，从 references/keywords.md 读取）**
+
+同时，对每个 Watchlist 标的也执行相同的三步抓取流程。
+
+> **Token节省点**：每个关键词只取前15条（够用），不做逐条深度分析，统一在 Step 3 批量处理。
 
 ---
 
-## Step 2：当日热门个股/板块自动发现
+### Step 3：分析处理（纯文本推理，不额外抓取）
 
-**这是 v2 新增的核心能力。** 通过两个维度自动识别当日小红书上冒头的强势标的：
+在已有数据基础上完成所有分析，**不再发起新的网络请求**：
 
-### 2A — 从已抓取数据中提取标的名
+**3A：计算今日风险指数**
+读取 `references/scoring.md`，对小红书数据评分，归一化到0-100。
 
-扫描 Step 1 的所有帖子标题，提取出现的：
-- A股股票名（如"比亚迪"、"宁德时代"、"中芯国际"）
-- 港股名（如"腾讯"、"美团"、"阿里"、"恒生科技"）
-- 美股名（如"英伟达"、"特斯拉"、"纳斯达克"）
-- 板块名（如"半导体"、"光模块"、"AI算力"、"新能源"、"黄金"）
-- ETF名（如"科创ETF"、"纳指ETF"、"恒科ETF"）
+**3B：提取热点标的**
+从小红书帖子标题 + 雪球热股榜，合并识别今日冒头标的 Top 3。
 
-统计每个标的出现次数 + 累计点赞数 → 按热度排序取 Top 5
+**3C：Watchlist 情绪分类**
+对每个 Watchlist 标的的帖子，分类为：追涨/解套/割肉/做T/新入场。
+计算各类占比，评定套牢压力（高/中/低）。
 
-### 2B — 专项热点搜索
+**3D：前日复盘**
+对照 memory.md 中的昨日判断：
+- 若判断"看涨"而标的今日上涨 → ✅ 准确
+- 若判断"看涨"而标的今日下跌 → ❌ 失误，分析原因
+- 归纳失误模式，更新判断校准权重
 
-额外搜索以下动态关键词，捕捉当日爆发标的：
-
-```
-今天涨停
-今天暴涨
-今日强势
-板块今天
-```
-
-**抓取后提取标题中的具体标的名**，与 2A 合并去重，得到**今日热点标的候选列表**。
-
-### 2C — 对 Top 3 热点标的做深度小红书搜索
-
-对候选列表中热度最高的 3 个标的，各执行一次专项搜索：
-```
-https://www.xiaohongshu.com/search_result?keyword=<标的名>&source=web_explore_feed
-```
-抓取前15条，提取：标题、点赞数、情绪倾向（正面/负面/中性）
+**3E：多日趋势推断（核心智能）**
+读取 watchlist.md 历史数据，识别连续信号：
+- 连续3日追涨情绪上升 + 雪球讨论量放大 → 🔴 过热预警
+- 连续3日割肉情绪占主导 + 热度下降 → 🟢 潜在底部信号
+- 雪球讨论量突增但小红书无反应 → 🟡 机构关注但散户未跟进
+- 小红书热度暴增而雪球讨论平稳 → ⚠️ 纯散户追涨，风险高
+若有值得主动推送的信号，在日报顶部加 **🔔 智能预警** 模块。
 
 ---
 
-## Step 3：Watchlist 专项追踪
+### Step 4：生成 HTML 日报
 
-对用户 Watchlist 中的**每一个标的**，依次执行：
+**输出到 `/mnt/user-data/outputs/daily_report_YYYYMMDD.html`**
 
-1. **搜索小红书**：用该标的的3个关键词各搜一次，合并结果
-2. **情绪分类**：将帖子分为 追涨/解套/割肉/长期持有/新入场 五类
-3. **套牢深度评估**（特别针对历史高热标的如恒生科技）：
-   - 检测"回本"、"解套"、"亏了多少"、"还要等多久"等词
-   - 统计负面情绪帖比例，判断散户套牢压力
-4. **趋势对比**：与上次日报的热度数据对比，标注"↑升温/↓降温/→持平"
-5. **web_search 归因**：搜索该标的近48小时内的新闻/公告
+读取 `references/report_template.html` 作为基础样式，填入数据。
 
-**Watchlist 标的输出格式：**
+**HTML 日报结构：**
 ```
-【标的名】[个股/板块] 📌 Watchlist
-━━━━━━━━━
-今日热度：[帖子数] 条 | 趋势：↑↓→
-情绪分布：追涨[N]% | 解套[N]% | 割肉[N]% | 新入场[N]%
-套牢压力：[高/中/低]（基于负面情绪帖比例）
-代表帖子：
-  · "[最高赞追涨帖标题]" 👍[数]  — 🔴追涨风险
-  · "[最高赞解套帖标题]" 👍[数]  — 🟡套牢情绪
-今日归因：[新闻/公告摘要，含来源]
-多方论点：[看涨的主要论据]
-空方论点：[看跌/风险因素]
-客观判断：[分析师中性视角]
+[🔔 智能预警]（有信号时显示，否则隐藏）
+[📅 日期 | 数据源 | 抓取量]
+[🌡️ 今日综合风险指数]（仪表盘可视化）
+[📰 前日复盘]（昨日判断 vs 实际表现）
+[🔥 大盘情绪 TOP5]（小红书）
+[📈 雪球热股榜]（涨跌榜）
+[🆕 今日热点标的]（双源融合发现）
+[📌 Watchlist 专项追踪]（每个标的独立卡片）
+[🧠 多日趋势推断]（连续信号归纳）
+[⚠️ 风险声明]
 ```
 
 ---
 
-## Step 4：利好利空快讯整合
+### Step 5：更新记忆文件
 
-用 `web_search` 搜索今日市场重要消息，补充进日报：
+日报生成后，自动更新两个文件：
 
-搜索词：
-- `A股 今日 重要公告 利好`
-- `A股 今日 政策 消息`
-- `[当日热点板块] 今日 消息`
-
-筛选原则：只收录 **A级信源**（财联社/巨潮/证监会官网），时效48小时内。
-
----
-
-## Step 5：综合输出
-
-### 完整日报模板 v2
-
+**更新 `references/memory.md`：**
+```markdown
+## 最新一日记录（YYYY-MM-DD）
+综合风险指数：[N]
+大盘判断：[看涨/中性/看跌] + 理由一句话
+Watchlist判断：
+- 恒生科技：[方向] | 信心：[高/中/低]
+- （其他标的）
+待用户填入收盘价：[留空]
 ```
-📊 小红书股票舆情日报 v2
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 [DATE]  |  🔍 抓取关键词 [N]个  |  📝 采集帖子 [N]条
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌡️ 今日综合风险指数：[分]/100  [等级emoji]
-[风险等级描述]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔥 今日大盘情绪 TOP 5 话题
-
-[同 v1 格式，热门情绪词 + 代表帖 + 情绪特征]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🆕 今日小红书热点标的发现
-
-🏆 #1 [标的名] — 热度指数 [分]  ⚠️[风险等级]
-板块：[所属板块]  |  类型：[个股/板块/ETF]
-热帖摘要：
-  · "[帖子标题]" 👍[数]
-  · "[帖子标题]" 👍[数]
-散户情绪：[一句话描述]
-今日驱动：[基于web_search的归因，含信源]
-分析师判断：[中性客观视角]
-
-🏆 #2 ...
-🏆 #3 ...
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 Watchlist 专项追踪
-
-[每个 Watchlist 标的按上方格式输出]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📰 今日重要快讯（A级信源）
-
-· [时间] [标题] — [来源]
-· [时间] [标题] — [来源]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📈 趋势追踪（连续多日数据）
-
-[标的名]：[日期1: 热度X] → [日期2: 热度Y] → 今日: 热度Z  趋势↑
-[如无历史数据则跳过此节]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ 风险声明
-本报告基于小红书公开内容的舆情分析，仅供参考，不构成投资建议。
-小红书散户情绪作为反向指标使用，历史规律不代表未来表现。
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
+**更新 `references/watchlist.md` 趋势表：**
+追加今日数据行（帖子数/主导情绪/热度指数/套牢压力）
 
 ---
 
 ## 异常处理
 
-| 情况 | 处理方式 |
-|------|---------|
-| 页面弹出登录框 | 暂停，提示用户重新登录后继续 |
-| 出现滑块验证码 | 提示用户手动完成验证，等待后继续 |
-| 某关键词搜索结果为空 | 跳过，记录在日报备注 |
-| Watchlist 标的无相关帖子 | 标注"今日无明显讨论"，仍输出 web_search 归因 |
-| 网络超时 | 重试一次，仍失败则跳过 |
+| 情况 | 处理 |
+|------|------|
+| 小红书登录失效 | 提示重新登录，跳过XHS，仅用雪球数据 |
+| 雪球热股榜加载失败 | 重试一次，仍失败则跳过该模块 |
+| MutationObserver超时 | 记录"排序切换失败"，继续抓取（数据仍有参考价值）|
+| Watchlist标的无结果 | 标注"今日无明显讨论"，保留雪球侧数据 |
+| memory.md不存在 | 跳过复盘模块，仅输出当日数据 |
 
 ---
 
 ## 参考文件
 
-- `references/keywords.md` — 完整情绪关键词库（分级 + 每日执行列表）
-- `references/scoring.md` — 风险评分规则（情绪词库 + 计算公式）
-- `references/watchlist.md` — 用户 Watchlist 持久化存储（由 Skill 自动维护）
+- `references/keywords.md` — 每日必搜关键词（分级）
+- `references/scoring.md` — 风险评分规则
+- `references/watchlist.md` — 用户Watchlist + 历史趋势数据
+- `references/memory.md` — 每日判断记录（复盘用）
+- `references/report_template.html` — HTML日报样式模板
