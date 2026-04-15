@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>股票舆情日报 {{DATE}}</title>
+<style>
+  :root {
+    --red: #e53935; --orange: #fb8c00; --yellow: #fdd835;
+    --green: #43a047; --blue: #1e88e5; --purple: #8e24aa;
+    --gray: #546e7a; --bg: #f5f7fa; --card: #ffffff;
+    --border: #e0e6ed; --text: #2d3748; --muted: #718096;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, 'PingFang SC', sans-serif; background: var(--bg); color: var(--text); }
+  .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+
+  /* Header */
+  .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: white; border-radius: 16px; padding: 28px 32px; margin-bottom: 20px; }
+  .header h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+  .header .meta { font-size: 13px; opacity: 0.7; display: flex; gap: 16px; flex-wrap: wrap; }
+  .header .meta span::before { content: '· '; }
+
+  /* Alert banner */
+  .alert { background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+    color: white; border-radius: 12px; padding: 16px 20px; margin-bottom: 20px;
+    display: flex; align-items: flex-start; gap: 12px; }
+  .alert .icon { font-size: 24px; flex-shrink: 0; }
+  .alert h3 { font-size: 15px; margin-bottom: 6px; }
+  .alert p { font-size: 13px; opacity: 0.9; line-height: 1.5; }
+  .alert.hidden { display: none; }
+
+  /* Cards */
+  .card { background: var(--card); border-radius: 12px; padding: 20px 24px;
+    margin-bottom: 16px; border: 1px solid var(--border); }
+  .card-title { font-size: 14px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px; }
+
+  /* Risk meter */
+  .risk-meter { text-align: center; padding: 8px 0; }
+  .risk-score { font-size: 56px; font-weight: 800; line-height: 1; }
+  .risk-label { font-size: 16px; font-weight: 600; margin: 8px 0 4px; }
+  .risk-desc { font-size: 13px; color: var(--muted); }
+  .risk-bar { height: 8px; border-radius: 4px; margin: 16px 0 8px;
+    background: linear-gradient(to right, #43a047, #fdd835, #fb8c00, #e53935); }
+  .risk-bar-track { position: relative; }
+  .risk-indicator { position: absolute; top: -4px; width: 16px; height: 16px;
+    background: white; border: 3px solid #333; border-radius: 50%;
+    transform: translateX(-50%); transition: left 0.5s ease; }
+  .score-red { color: var(--red); }
+  .score-orange { color: var(--orange); }
+  .score-yellow { color: var(--yellow); }
+  .score-green { color: var(--green); }
+
+  /* Review section */
+  .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .review-item { background: var(--bg); border-radius: 8px; padding: 12px 16px; }
+  .review-item .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .review-item .value { font-size: 15px; font-weight: 600; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 12px; font-weight: 600; }
+  .tag-correct { background: #e8f5e9; color: var(--green); }
+  .tag-wrong { background: #ffebee; color: var(--red); }
+  .tag-pending { background: #f5f5f5; color: var(--muted); }
+
+  /* Hot topics */
+  .topic-item { display: flex; gap: 12px; padding: 12px 0;
+    border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .topic-item:last-child { border-bottom: none; }
+  .topic-rank { font-size: 20px; font-weight: 800; color: var(--border);
+    width: 28px; flex-shrink: 0; line-height: 1.3; }
+  .topic-rank.top3 { color: var(--orange); }
+  .topic-content .name { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .topic-content .posts { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .topic-content .emotion { font-size: 13px; line-height: 1.5; }
+  .risk-badge { display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600; margin-left: 8px; }
+  .badge-red { background: #ffebee; color: var(--red); }
+  .badge-orange { background: #fff3e0; color: var(--orange); }
+  .badge-yellow { background: #fffde7; color: #f57f17; }
+  .badge-green { background: #e8f5e9; color: var(--green); }
+
+  /* Xueqiu hot stocks */
+  .stock-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stock-item { background: var(--bg); border-radius: 8px; padding: 10px 12px; }
+  .stock-item .srank { font-size: 11px; color: var(--muted); }
+  .stock-item .sname { font-size: 14px; font-weight: 600; margin: 2px 0; }
+  .stock-item .schange { font-size: 14px; font-weight: 700; }
+  .up { color: var(--red); }
+  .down { color: var(--green); }
+
+  /* Watchlist cards */
+  .watchlist-card { border-left: 4px solid var(--orange); margin-bottom: 16px; }
+  .watchlist-card .wl-header { display: flex; justify-content: space-between;
+    align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+  .watchlist-card .wl-name { font-size: 17px; font-weight: 700; }
+  .watchlist-card .wl-trend { font-size: 13px; }
+  .emotion-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .emotion-bar .seg { transition: width 0.3s ease; }
+  .seg-bull { background: var(--red); }
+  .seg-neutral { background: var(--yellow); }
+  .seg-bear { background: var(--green); }
+  .seg-trade { background: var(--blue); }
+  .emotion-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .emotion-legend span::before { content: '■ '; }
+  .emotion-legend .l-bull::before { color: var(--red); }
+  .emotion-legend .l-neutral::before { color: var(--yellow); }
+  .emotion-legend .l-bear::before { color: var(--green); }
+  .emotion-legend .l-trade::before { color: var(--blue); }
+  .wl-posts { margin-top: 12px; }
+  .wl-post { display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .wl-post:last-child { border-bottom: none; }
+  .wl-post .ptitle { flex: 1; color: var(--text); }
+  .wl-post .plikes { color: var(--muted); font-size: 12px; margin: 0 8px; }
+  .wl-post .psignal { font-size: 11px; }
+  .pressure-high { color: var(--red); font-weight: 700; }
+  .pressure-mid { color: var(--orange); font-weight: 700; }
+  .pressure-low { color: var(--green); font-weight: 700; }
+
+  /* Trend intelligence */
+  .trend-item { background: var(--bg); border-radius: 8px; padding: 14px 16px;
+    margin-bottom: 10px; border-left: 3px solid var(--purple); }
+  .trend-item .thead { font-size: 13px; font-weight: 600; margin-bottom: 6px;
+    display: flex; gap: 8px; align-items: center; }
+  .trend-item .tbody { font-size: 13px; color: var(--muted); line-height: 1.6; }
+  .trend-days { font-size: 11px; background: var(--purple); color: white;
+    padding: 2px 6px; border-radius: 4px; }
+
+  /* Source tags */
+  .source-xhs { background: #ffebee; color: #c62828; padding: 2px 6px;
+    border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .source-xq { background: #e3f2fd; color: #1565c0; padding: 2px 6px;
+    border-radius: 4px; font-size: 11px; font-weight: 600; }
+
+  /* Footer */
+  .footer { text-align: center; font-size: 12px; color: var(--muted);
+    padding: 20px 0; line-height: 1.8; }
+
+  @media (max-width: 600px) {
+    .review-grid { grid-template-columns: 1fr; }
+    .stock-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>📊 股票舆情日报</h1>
+    <div class="meta">
+      <span>{{DATE}}</span>
+      <span>小红书 {{XHS_COUNT}} 条</span>
+      <span>雪球热股榜 + 搜索</span>
+      <span>Watchlist {{WL_COUNT}} 个标的</span>
+    </div>
+  </div>
+
+  <!-- 智能预警（有信号时显示） -->
+  <div class="alert {{ALERT_CLASS}}">
+    <div class="icon">🔔</div>
+    <div>
+      <h3>智能预警</h3>
+      <p>{{ALERT_CONTENT}}</p>
+    </div>
+  </div>
+
+  <!-- 今日综合风险指数 -->
+  <div class="card">
+    <div class="card-title">🌡️ 今日综合风险指数（小红书散户情绪）</div>
+    <div class="risk-meter">
+      <div class="risk-score {{SCORE_CLASS}}">{{RISK_SCORE}}</div>
+      <div class="risk-label">{{RISK_LEVEL}}</div>
+      <div class="risk-desc">{{RISK_DESC}}</div>
+      <div class="risk-bar-track" style="margin-top:16px;">
+        <div class="risk-bar"></div>
+        <div class="risk-indicator" style="left:{{RISK_PCT}}%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 前日复盘 -->
+  <div class="card">
+    <div class="card-title">📰 前日复盘（{{PREV_DATE}}）</div>
+    {{REVIEW_CONTENT}}
+  </div>
+
+  <!-- 小红书大盘情绪 TOP5 -->
+  <div class="card">
+    <div class="card-title">🔥 今日大盘情绪 TOP5 <span class="source-xhs">小红书·最新</span></div>
+    {{TOPICS_CONTENT}}
+  </div>
+
+  <!-- 雪球热股榜 -->
+  <div class="card">
+    <div class="card-title">📈 雪球热股榜（今日）<span class="source-xq">雪球</span></div>
+    <div class="stock-grid">
+      {{XUEQIU_STOCKS}}
+    </div>
+  </div>
+
+  <!-- 今日热点标的发现 -->
+  <div class="card">
+    <div class="card-title">🆕 今日热点标的发现（双源融合）</div>
+    {{HOT_TARGETS}}
+  </div>
+
+  <!-- Watchlist 专项追踪 -->
+  <div class="card">
+    <div class="card-title">📌 Watchlist 专项追踪</div>
+    {{WATCHLIST_CONTENT}}
+  </div>
+
+  <!-- 多日趋势推断 -->
+  <div class="card">
+    <div class="card-title">🧠 多日趋势推断</div>
+    {{TREND_CONTENT}}
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    本报告基于小红书、雪球公开内容的舆情分析，仅供参考，不构成投资建议。<br>
+    小红书散户情绪作为反向指标使用，历史规律不代表未来表现，投资者应独立判断，风险自担。<br>
+    Generated by xhs-sentiment Skill · {{DATE}}
+  </div>
+
+</div>
+</body>
+</html>
