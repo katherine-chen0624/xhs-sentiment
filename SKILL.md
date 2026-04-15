@@ -24,14 +24,26 @@ compatibility: "需要 Claude in Chrome（已连接，已登录小红书和雪�
 
 ## Watchlist 管理
 
-用户说"监测XX / 加入watchlist / 跟踪XX"时，记录：
-```
-名称 | 类型(个股/板块) | XHS关键词×3 | 雪球搜索词 | 备注
-```
+**首次使用流程：**
 
-**当前 Watchlist（从 references/watchlist.md 读取）**
+1. 读取 `references/watchlist.md`，检查是否有标的
+2. 若 Watchlist 为空（暂无标的），则：
+   - 询问用户："你想监测哪些个股或板块？可以告诉我名称，我来添加。"
+   - 若用户暂时没有，默认只跑**宏观大盘**模式（不含 Watchlist 专项追踪）
+3. 若 Watchlist 有标的，直接进入正常日报流程
 
-每次日报自动追加历史数据到 watchlist.md 的趋势表。
+**用户说"监测XX / 加入watchlist / 跟踪XX"时，记录：**
+```
+名称 | 类型(个股/板块/ETF) | XHS关键词×3 | 雪球搜索词 | 备注
+```
+建议3个小红书关键词供用户确认后写入 watchlist.md。
+
+**宏观大盘模式（无 Watchlist 时的默认输出）：**
+- 小红书大盘情绪 TOP5
+- 雪球热股榜 Top9
+- 今日热点标的自动发现
+- 综合风险指数
+- 趋势推断（基于大盘关键词的多日数据）
 
 ---
 
